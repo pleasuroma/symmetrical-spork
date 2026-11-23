@@ -23,3 +23,13 @@ for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do cp android-res/mipmap-$d/*.png "$RES
 # 매번 같은 서명키 → 새 버전을 지우지 않고 덮어 설치 가능
 mkdir -p ~/.android && cp android-res/debug.keystore ~/.android/debug.keystore
 grep -c "uses-permission" "$M"
+# ML Kit 문서 스캐너 + 한글 글자 인식 (자체 플러그인)
+J=android/app/src/main/java/com/jparklab/baroscan
+cp android-src/*.java "$J/"
+cat >> android/app/build.gradle <<'G'
+
+dependencies {
+    implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+    implementation 'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1'
+}
+G

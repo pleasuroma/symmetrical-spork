@@ -69,6 +69,8 @@ main{max-width:720px;margin:0 auto;padding:16px max(16px,env(safe-area-inset-rig
 .lhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
 .warnbar{display:grid;gap:10px;margin-bottom:14px;padding:12px 14px;border-radius:12px;background:var(--point);color:var(--point-fg);font-size:14px}
 .warnbar .btn{background:var(--accent);color:var(--accent-fg);border-color:transparent;min-height:44px}
+.ask{position:fixed;z-index:15;left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:calc(84px + env(safe-area-inset-bottom,0px));display:grid;gap:10px;padding:14px;border-radius:14px;background:var(--surface);border:1px solid var(--point);box-shadow:0 8px 28px rgba(0,0,0,.3);font-weight:600}
+.ask .row{justify-content:flex-end;margin:0}
 .status{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:var(--chip);font-size:14px}
 .chk{display:flex;align-items:center;gap:8px;font-size:14px}
 .chk input{width:20px;height:20px;accent-color:var(--point)}
@@ -190,6 +192,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--surface);border:1
 
 <input type="file" id="fCam" accept="image/*" capture="environment" hidden>
 <input type="file" id="fLib" accept="image/*" multiple hidden>
+<div class="ask" id="photoAsk" hidden><span id="photoAskTxt"></span><div class="row"><button class="btn sm" id="photoNo">아니요</button><button class="btn sm pri" id="photoYes">사진 앱에 저장</button></div></div>
 <div id="toast" role="status"></div>
 <div id="busy" hidden><div class="spin"></div><span id="busyTxt"></span></div>
 
@@ -306,7 +309,7 @@ function applyFilter(cv,mode){
 }
 function render(it,src,maxSide){let o=warp(src,it.quad,maxSide);o=rotate(o,it.rot);applyFilter(o,it.filter);return o}
 async function process(it,src){
-  src=src||await decode(it.file);if(!it.quad)it.quad=detectQuad(src);
+  src=src||await decode(it.file);if(!it.quad)it.quad=it.pre?fullQuad(src.width,src.height):detectQuad(src);
   const o=render(it,src,MAX[it.kind]),b=await toBlob(o);
   if(it.url)URL.revokeObjectURL(it.url);it.blob=b;it.url=URL.createObjectURL(b);it.w=o.width;it.h=o.height;
 }
@@ -314,7 +317,7 @@ async function process(it,src){
 /* ---------- 화면 전환 (안드로이드 뒤로가기 지원) ---------- */
 const TITLES={home:'바로스캔',doc:'문서 스캔',edit:'페이지 편집',cards:'명함 스캔',card:'명함 확인'};
 let view='home';
-function show(v){view=v;$$('.view').forEach(s=>s.hidden=s.id!=='v-'+v);$('#ttl').textContent=TITLES[v];$('#back').hidden=v==='home';updateSub();scrollTo(0,0);if(v==='cards')drawList()}
+function show(v){view=v;$$('.view').forEach(s=>s.hidden=s.id!=='v-'+v);$('#ttl').textContent=TITLES[v];$('#back').hidden=v==='home';updateSub();scrollTo(0,0);if(v==='cards')drawList();if(v!=='cards'&&v!=='card')$('#photoAsk').hidden=true}
 function go(v){history.pushState({v},'');show(v)}
 history.replaceState({v:'home'},'');
 addEventListener('popstate',e=>{const v=e.state?.v||'home';if(view==='edit'&&v!=='edit')edClose();show(v)});
@@ -333,7 +336,7 @@ async function onFiles(e){
   const list=t.kind==='card'&&!t.batch?files.slice(0,2-t.side):files;
   for(const[i,f]of list.entries()){
     busy(list.length>1?`자동 보정 중 ${i+1} / ${list.length}`:'테두리 찾고 보정하는 중…');await sleep(40);
-    const it={file:f,kind:t.kind,rot:0,filter:t.kind==='doc'?'scan':'vivid'};
+    const it={file:f,kind:t.kind,rot:0,pre:!!e.pre,filter:e.pre?'orig':t.kind==='doc'?'scan':'vivid'};
     try{await process(it)}catch(err){console.error(err);toast('사진을 처리하지 못했습니다. 다시 찍어 주세요.');continue}
     if(t.kind==='doc'){doc.push(it);if($('#autoImg').checked){saveBlob(it.blob,imgName(doc.length-1));await sleep(300)}}else if(t.batch)cards.push(newCard(it));else card[t.side+i]=it;
   }
@@ -479,8 +482,10 @@ function refresh(c){if(view==='cards')drawList();if(c===cc&&view==='card'){fillF
 async function ocrCard(c){
   c.state='ocr';ocrNow=c;refresh(c);ocrSay('글자 인식 준비 중…');
   try{
-    const w=await getOCR(),lines=[];
-    for(const it of c.sides.filter(Boolean)){const{data}=await w.recognize(it.blob);
+    const w=NATIVE?null:await getOCR(),lines=[];
+    for(const it of c.sides.filter(Boolean)){
+      if(NATIVE){ocrSay('글자 읽는 중…');const r=await nat('JpScan','recognize',{base64:await b64(it.blob)});for(const l of r.lines||[])if(l.text.trim())lines.push({t:l.text.trim(),h:l.h});continue}
+      const{data}=await w.recognize(it.blob);
       for(const l of data.lines||[]){const h=l.bbox.y1-l.bbox.y0,ws=(l.words||[]).filter(w=>w.text.trim());let seg=[];
         const push=()=>{if(!seg.length)return;const t=seg.map(w=>w.text).join(' ').trim(),cf=seg.reduce((a,w)=>a+w.confidence,0)/seg.length;seg=[];if(t&&(cf>=30||/[\d@]/.test(t)))lines.push({t,h})};
         if(!ws.length){if(l.text.trim())lines.push({t:l.text.trim(),h});continue}
@@ -534,7 +539,9 @@ function parseCard(lines){
     if(!hasT&&!/[가-힣]/.test(l.t)&&RE_DEPT.test(l.t)&&l.t.length<=40&&!/\d/.test(l.t)&&!RE_ORG.test(l.t)){if(!r.dept){r.dept=l.t;l.used=true}continue}
     if(!hasT&&!(dp.length&&l.t.length<=15&&!/\d/.test(l.t)&&!RE_ORG.test(l.t)))continue;
     if(dp.length&&!r.dept){r.dept=dp.join(' ');l.used=true}
-    if(hasT&&!r.title){r.title=parts.filter(p=>!dp.includes(p)).join(' ');l.used=true}}
+    if(hasT&&!r.title){const m=l.t.match(RE_TITLE),pre=l.t.slice(0,m.index).replace(/[\s|·,\/]+$/,'').trim();
+      if(pre&&RE_ORG.test(pre)){if(!r.org)r.org=pre;r.title=l.t.slice(m.index).trim();l.used=true}
+      else{r.title=parts.filter(p=>!dp.includes(p)).join(' ');l.used=true}}}
   const addr=[];for(const l of free())if(RE_ADDR.test(l.t)&&/\d/.test(l.t)&&!RE_TITLE.test(l.t)){l.used=true;addr.push(l.t.replace(/^(주소|address|addr?|a)\s*[:.)]?\s*/i,''))}
   r.adr=addr.slice(0,2).join(' ');
   const orgs=free().filter(l=>RE_ORG.test(l.t)).sort((a,b)=>/college|병원|의원|clinic|hospital/i.test(b.t)-/college|병원|의원|clinic|hospital/i.test(a.t)||b.h-a.h);
@@ -577,11 +584,20 @@ async function saveContacts(list){
   toast(`${out.length}명 저장 · 다운로드 알림(또는 내 파일)에서 .vcf를 열면 한 번에 연락처로 가져옵니다`,6000);return out.length;
 }
 $('#cardSave').onclick=async()=>{if(!cc)return;if(!(cc.data.fn||'').trim()&&!(cc.data.org||'').trim()){toast('이름이나 회사 중 하나는 입력해 주세요');$('#f_fn').focus();return}
-  await saveContacts([cc]);refresh(cc)};
+  if(await saveContacts([cc]))askPhotos([cc]);refresh(cc)};
 $('#cardsSave').onclick=async()=>{const reading=cards.filter(c=>c.state==='wait'||c.state==='ocr').length;
   if(reading&&!confirm(`아직 ${reading}장을 읽는 중입니다. 읽은 명함만 먼저 저장할까요?`))return;
-  const n=await saveContacts(cards.filter(c=>!['wait','ocr'].includes(c.state)));const skip=cards.length-reading-n;
+  const L=cards.filter(c=>!['wait','ocr'].includes(c.state)),n=await saveContacts(L);if(n)askPhotos(L.filter(c=>c.state==='saved'));const skip=cards.length-reading-n;
   if(skip>0)setTimeout(()=>toast(`이름·회사가 비어 있는 ${skip}장은 빼고 저장했습니다`,4000),6200);drawList()};
+
+/* 명함 저장 뒤: 스캔된 명함 이미지를 사진 앱에도 저장할지 묻기 */
+let askList=[];
+function askPhotos(list){askList=list.filter(c=>c.sides.some(Boolean));const n=askList.reduce((a,c)=>a+c.sides.filter(Boolean).length,0);if(!n)return;
+  $('#photoAskTxt').textContent=`스캔한 명함 이미지 ${n}장을 사진 앱에도 저장할까요?`;$('#photoAsk').hidden=false}
+$('#photoNo').onclick=()=>$('#photoAsk').hidden=true;
+$('#photoYes').onclick=async()=>{$('#photoAsk').hidden=true;let k=0;
+  for(const c of askList)for(const it of c.sides.filter(Boolean)){await saveBlob(it.blob,`card_${stamp()}_${String(++k).padStart(2,'0')}.jpg`);await sleep(400)}
+  toast(`명함 이미지 ${k}장을 사진 앱에 저장했습니다`+(NATIVE?' (J.Park Lab 앨범)':' (Download 앨범)'),4000)};
 
 /* ---------- 안드로이드 앱(APK)일 때: 연락처·갤러리·파일에 직접 저장 ---------- */
 const CAP=window.Capacitor,NATIVE=!!(CAP&&CAP.isNativePlatform&&CAP.isNativePlatform()&&CAP.nativePromise);
@@ -613,6 +629,12 @@ if(NATIVE){
       c.state='saved';n++}}
     catch(e){console.error(e);toast('연락처 저장 중 문제가 생겼습니다: '+errMsg(e),6000)}finally{busy()}
     if(n)toast(`${n}명을 연락처에 바로 저장했습니다`,4000);else if(!list.length)toast('저장할 명함이 없습니다');return n};
+  // 촬영 버튼 → 구글 문서 스캐너 (자동 테두리·원근 보정, 여러 장 연속)
+  const pickWeb=openPick;
+  openPick=async(cam,t)=>{if(!cam)return pickWeb(cam,t);
+    let r;try{r=await nat('JpScan','scan',{pageLimit:t.kind==='doc'?50:t.batch?30:2-t.side})}catch(e){console.error(e);toast('스캐너를 열지 못했습니다: '+errMsg(e),5000);return}
+    const files=[];for(const u of (r&&r.pages)||[]){try{files.push(new File([await (await fetch(CAP.convertFileSrc(u))).blob()],'scan.jpg',{type:'image/jpeg'}))}catch(e){console.error(e)}}
+    if(files.length){pick=t;await onFiles({target:{files},pre:true})}};
   document.querySelectorAll('.hint').forEach(h=>h.textContent=h.textContent.replace('갤러리 앱의 Download 앨범','갤러리의 J.Park Lab 앨범'));
   $('#cardsSave').title='연락처에 바로 저장';
 }
