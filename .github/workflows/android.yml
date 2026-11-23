@@ -1,0 +1,45 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, 'ccr-*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Create Android project
+        run: |
+          npx cap add android
+          bash scripts/android-setup.sh
+          npx cap sync android
+      - name: Build APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+      - run: cp android/app/build/outputs/apk/debug/app-debug.apk baroscan.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baroscan-apk
+          path: baroscan.apk
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: baroscan-${{ github.run_number }}
+          name: J.Park Lab 바로스캔 (빌드 ${{ github.run_number }})
+          body: 휴대폰에서 baroscan.apk를 받아 설치하세요. 이전 버전 위에 그대로 덮어 설치됩니다.
+          files: baroscan.apk
+          make_latest: true
