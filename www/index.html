@@ -138,6 +138,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--surface);border:1
     <button class="btn sm" id="edAuto">테두리 자동</button>
     <button class="btn sm" id="edFull">사진 전체</button>
     <button class="btn sm" id="edRot">90° 회전</button>
+    <button class="btn sm" id="edFlat">글줄 펴기: 켬</button>
     <button class="btn sm" id="edUp">앞으로</button>
     <button class="btn sm" id="edDown">뒤로</button>
     <button class="btn sm" id="edDel">삭제</button>
@@ -312,7 +313,59 @@ function applyFilter(cv,mode){
 function unsharp(cv,amt,rad){const W=cv.width,H=cv.height,b=mk(W,H),bx=ctx2(b);bx.filter=`blur(${rad}px)`;bx.drawImage(cv,0,0);
   const x=ctx2(cv),im=x.getImageData(0,0,W,H),d=im.data,bd=bx.getImageData(0,0,W,H).data;
   for(let i=0;i<d.length;i+=4){d[i]+=amt*(d[i]-bd[i]);d[i+1]+=amt*(d[i+1]-bd[i+1]);d[i+2]+=amt*(d[i+2]-bd[i+2])}x.putImageData(im,0,0)}
-function render(it,src,maxSide){let o=warp(src,it.quad,maxSide);o=rotate(o,it.rot);applyFilter(o,it.filter);return o}
+function render(it,src,maxSide){let o=warp(src,it.quad,maxSide);o=rotate(o,it.rot);if(it.kind==='doc'&&it.flat!==false)o=dewarp(o);applyFilter(o,it.filter);return o}
+
+// 글줄 펴기: 책처럼 휜 페이지에서 글줄을 찾아 각 줄이 수평이 되도록 세로 방향으로 편다
+function dewarp(cv){
+  const W=cv.width,H=cv.height,k=Math.min(1,1400/Math.max(W,H)),w=Math.round(W*k),h=Math.round(H*k);
+  if(w<200||h<200)return cv;
+  const sm=mk(w,h);ctx2(sm).drawImage(cv,0,0,w,h);applyFilter(sm,'gray');
+  const px=ctx2(sm).getImageData(0,0,w,h).data,ink=new Float32Array(w*h);for(let i=0;i<w*h;i++)ink[i]=Math.max(0,235-px[i*4]);
+  const NS=Math.max(8,Math.min(30,Math.round(w/35))),sw=w/NS,prof=[],gp=new Float32Array(h);
+  for(let s=0;s<NS;s++){const p=new Float32Array(h),x0=Math.round(s*sw),x1=Math.round((s+1)*sw);
+    for(let y=0;y<h;y++){let c=0;for(let x=x0;x<x1;x++)c+=ink[y*w+x];p[y]=c;gp[y]+=c}prof.push(p)}
+  // 줄 간격 P: 전체 가로합의 자기상관 첫 봉우리
+  const mean=gp.reduce((a,b)=>a+b,0)/h,L=Math.floor(h/8),ac=new Float32Array(L+1);
+  for(let lag=1;lag<=L;lag++){let c=0;for(let y=0;y+lag<h;y++)c+=(gp[y]-mean)*(gp[y+lag]-mean);ac[lag]=c/(h-lag)}
+  let m=1;while(m<L&&ac[m+1]<ac[m])m++;let amax=0;for(let i=m;i<=L;i++)amax=Math.max(amax,ac[i]);
+  let P=0;for(let i=m+1;i<L;i++)if(ac[i]>=ac[i-1]&&ac[i]>=ac[i+1]&&ac[i]>.6*amax&&ac[i]>0){P=i;break}
+  if(P<5)return cv;
+  const r=Math.max(1,Math.round(P/5)),pk=prof.map(p=>{const q=new Float32Array(h);let a=0;
+      for(let y=0;y<h;y++){a+=p[Math.min(h-1,y+r)]-(y-r-1>=0?p[y-r-1]:0);q[y]=a}
+      let mx=0;for(const v of q)mx=Math.max(mx,v);const c=[];
+      for(let y=1;y<h-1;y++)if(q[y]>=q[y-1]&&q[y]>q[y+1]&&q[y]>mx*.15){if(c.length&&y-c[c.length-1][0]<P*.5){if(q[y]>c[c.length-1][1])c[c.length-1]=[y,q[y]]}else c.push([y,q[y]])}
+      return c.map(v=>v[0])});
+  let ref=Math.floor(NS/2);for(let s=Math.floor(NS/4);s<=Math.ceil(NS*3/4)&&s<NS;s++)if(pk[s].length>pk[ref].length)ref=s;
+  const lines=[];
+  for(const y0 of pk[ref]){const ys=new Array(NS).fill(null);ys[ref]=y0;
+    for(const dir of [1,-1]){let ls=ref,ly=y0,slope=0,miss=0;for(let s=ref+dir;s>=0&&s<NS;s+=dir){const exp=ly+slope*(s-ls);let by=null,bd=P*.4;
+      for(const y of pk[s]){const dd=Math.abs(y-exp);if(dd<bd){bd=dd;by=y}}
+      if(by!=null){slope=slope*.5+.5*(by-ly)/(s-ls);ys[s]=by;ls=s;ly=by;miss=0}else if(++miss>3)break}}
+    if(ys.filter(v=>v!=null).length>=NS*.35)lines.push(ys)}
+  if(lines.length<4)return cv;
+  // 줄마다 기준 대비 어긋난 양 → 빈 곳 채우고 매끄럽게
+  const D=lines.map(ys=>{const d=ys.map(v=>v==null?null:v-ys[ref]),kn=d.map((v,i)=>v==null?-1:i).filter(i=>i>=0);
+    for(let i=0;i<NS;i++)if(d[i]==null){const a=kn.filter(j=>j<i).pop(),b=kn.find(j=>j>i);
+      if(a!=null&&b!=null)d[i]=d[a]+(d[b]-d[a])*(i-a)/(b-a);
+      else{const e=a==null?b:a,e2=a==null?kn[1]:kn[kn.length-2],sl=e2==null||e2===e?0:(d[e]-d[e2])/(e-e2);d[i]=d[e]+sl*(i-e)*.7}}
+    return d.map((v,i)=>(d[Math.max(0,i-1)]+2*v+d[Math.min(NS-1,i+1)])/4)});
+  const Y0=lines.map(ys=>ys[ref]),med=(a,b,c)=>Math.max(Math.min(a,b),Math.min(Math.max(a,b),c));
+  const Dm=D.map((d,i)=>d.map((v,s)=>i>0&&i<D.length-1?med(D[i-1][s],v,D[i+1][s]):v));
+  let big=0;for(const d of Dm)for(const v of d)big=Math.max(big,Math.abs(v));if(big<.6)return cv;
+  const lim=h*.08,G=[];for(let s=0;s<NS;s++){const g=new Float32Array(h);let j=0;
+    for(let y=0;y<h;y++){while(j<Y0.length-1&&Y0[j+1]<=y)j++;
+      let v=y<=Y0[0]?Dm[0][s]:j>=Y0.length-1?Dm[Y0.length-1][s]:Dm[j][s]+(Dm[j+1][s]-Dm[j][s])*(y-Y0[j])/(Y0[j+1]-Y0[j]);
+      g[y]=Math.max(-lim,Math.min(lim,v))}G.push(g)}
+  // 원본 해상도로 세로 방향 재배치
+  const src=ctx2(cv).getImageData(0,0,W,H).data,out=new ImageData(W,H),od=out.data,ik=1/k,ci=new Int32Array(W),cf=new Float32Array(W),rd=new Float32Array(NS);
+  for(let X=0;X<W;X++){let f=Math.max(0,Math.min(NS-1,(X+.5)*k/sw-.5)),i=Math.floor(f);if(i>=NS-1){i=NS-2;f=NS-1}ci[X]=i;cf[X]=f-i}
+  for(let Y=0;Y<H;Y++){const yf=Math.min(h-1,Y*k),a=Math.floor(yf),b=Math.min(h-1,a+1),fy=yf-a;
+    for(let s=0;s<NS;s++)rd[s]=(G[s][a]*(1-fy)+G[s][b]*fy)*ik;
+    for(let X=0;X<W;X++){const i=ci[X],sy=Math.max(0,Math.min(H-1.001,Y+rd[i]+(rd[i+1]-rd[i])*cf[X])),y0=Math.floor(sy),f=sy-y0,
+      p0=(y0*W+X)*4,p1=p0+W*4*(y0<H-1?1:0),o=(Y*W+X)*4;
+      od[o]=src[p0]+(src[p1]-src[p0])*f;od[o+1]=src[p0+1]+(src[p1+1]-src[p0+1])*f;od[o+2]=src[p0+2]+(src[p1+2]-src[p0+2])*f;od[o+3]=255}}
+  const res=mk(W,H);ctx2(res).putImageData(out,0,0);return res;
+}
 async function process(it,src){
   src=src||await decode(it.file);if(!it.quad)it.quad=it.pre?fullQuad(src.width,src.height):detectQuad(src);
   const o=render(it,src,MAX[it.kind]),b=await toBlob(o);
@@ -392,7 +445,8 @@ let ed=null;
 const accent=()=>getComputedStyle(document.documentElement).getPropertyValue('--point').trim();
 async function openEditor(it,list){
   busy('불러오는 중…');let src;try{src=await decode(it.file)}finally{busy()}
-  ed={it,list,src,q:it.quad.map(p=>[...p]),rot:it.rot,filter:it.filter,del:false,active:null};
+  ed={it,list,src,q:it.quad.map(p=>[...p]),rot:it.rot,filter:it.filter,flat:it.flat!==false,del:false,active:null};
+  $('#edFlat').hidden=it.kind!=='doc';$('#edFlat').textContent='글줄 펴기: '+(ed.flat?'켬':'끔');
   go('edit');
   $('#edUp').hidden=$('#edDown').hidden=list!==doc;
   $('#filters').replaceChildren(...FILTERS.map(([k,l])=>{const b=document.createElement('button');b.className='chip';b.textContent=l;b.dataset.f=k;b.onclick=()=>{ed.filter=k;markFilter();setTab('prev')};return b}));
@@ -401,7 +455,7 @@ async function openEditor(it,list){
 const markFilter=()=>$$('#filters .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===ed.filter));
 function setTab(t){if(!ed)return;$$('.seg button').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));$('#cropCv').hidden=t!=='crop';$('#prevImg').hidden=t!=='prev';t==='crop'?drawCrop():drawPrev()}
 $$('.seg button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-function drawPrev(){const o=render({quad:ed.q,rot:ed.rot,filter:ed.filter},ed.src,1400);$('#prevImg').src=o.toDataURL('image/jpeg',.85)}
+function drawPrev(){const o=render({quad:ed.q,rot:ed.rot,filter:ed.filter,flat:ed.flat,kind:ed.it.kind},ed.src,1400);$('#prevImg').src=o.toDataURL('image/jpeg',.85)}
 function drawCrop(){
   const cv=$('#cropCv'),{src,q}=ed,maxW=cv.parentElement.clientWidth,maxH=innerHeight*.58,k=Math.min(maxW/src.width,maxH/src.height),r=devicePixelRatio||1;
   const w=Math.round(src.width*k),h=Math.round(src.height*k);
@@ -426,6 +480,7 @@ function drawCrop(){
 $('#edAuto').onclick=()=>{ed.q=detectQuad(ed.src);setTab('crop')};
 $('#edFull').onclick=()=>{ed.q=fullQuad(ed.src.width,ed.src.height);setTab('crop')};
 $('#edRot').onclick=()=>{ed.rot=(ed.rot+1)%4;setTab('prev')};
+$('#edFlat').onclick=()=>{ed.flat=!ed.flat;$('#edFlat').textContent='글줄 펴기: '+(ed.flat?'켬':'끔');setTab('prev')};
 function move(dir){const L=ed.list,i=L.indexOf(ed.it),j=i+dir;if(j<0||j>=L.length)return toast(dir<0?'이미 첫 페이지입니다':'이미 마지막 페이지입니다');
   [L[i],L[j]]=[L[j],L[i]];drawDoc();updateSub();toast(`${j+1}번째 페이지로 옮김`)}
 $('#edUp').onclick=()=>move(-1);$('#edDown').onclick=()=>move(1);
@@ -434,8 +489,8 @@ $('#edDone').onclick=()=>history.back();
 async function edClose(){
   const e=ed;ed=null;if(!e)return;const it=e.it,L=e.list,i=L.indexOf(it);
   if(e.del){if(L===doc)doc.splice(i,1);else card[i]=null;URL.revokeObjectURL(it.url);L===doc?drawDoc():(drawCard(),requestOCR(cc));toast('삭제했습니다');return}
-  if(e.rot===it.rot&&e.filter===it.filter&&JSON.stringify(e.q)===JSON.stringify(it.quad))return;
-  Object.assign(it,{quad:e.q,rot:e.rot,filter:e.filter});busy('적용 중…');await sleep(40);
+  if(e.rot===it.rot&&e.filter===it.filter&&e.flat===(it.flat!==false)&&JSON.stringify(e.q)===JSON.stringify(it.quad))return;
+  Object.assign(it,{quad:e.q,rot:e.rot,filter:e.filter,flat:e.flat});busy('적용 중…');await sleep(40);
   try{await process(it,e.src)}finally{busy()}
   if(L===doc)drawDoc();else{drawCard();requestOCR(cc)}
 }
